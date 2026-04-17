@@ -1,0 +1,65 @@
+# 🛡️ Hermes: Agentic AI Honeypot for Scam & Fraud Intelligence
+
+## 🚀 Overview
+
+Hermes is an intelligent AI-powered honeypot system designed to detect, engage, and extract intelligence from scam conversations in real time.
+
+Instead of blocking scams, Hermes actively interacts with attackers, wastes their time, and gathers critical fraud data.
+
+---
+
+## 🧠 Key Features
+
+* 🔍 **Hybrid Scam Detection**
+
+  * Keyword + ML-based detection
+* 🤖 **Agentic AI Honeypot**
+
+  * Human-like scam engagement
+* 🧭 **State-Based Intelligence**
+
+  * NEUTRAL → SUSPICIOUS → SCAM → EXTRACTION
+* 🧾 **Fraud Data Extraction**
+
+  * UPI IDs, phone numbers, links, Aadhaar
+* 📊 **Interactive Dashboard**
+
+  * Live chat + risk visualization
+
+---
+
+## ⚙️ Tech Stack
+
+* Python
+* Streamlit
+* Transformers (T5, BERT)
+* FastAPI (optional)
+* Gemini API (optional)
+
+---
+
+## 🧩 Architecture
+
+Input → Detection → State Manager → Agent → Extraction → Dashboard
+
+---
+
+## ▶️ How to Run
+
+```bash
+pip install -r requirements.txt
+python main.py
+streamlit run dashboard/app.py
+```
+
+---
+
+## 📌 Note
+
+Model files are excluded from this repository due to size limitations.
+
+---
+
+## 👨‍💻 Authors
+
+* Your Name

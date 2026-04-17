@@ -1,9 +1,8 @@
 ---
-base_model: microsoft/DialoGPT-small
+base_model: t5-base
 library_name: peft
-pipeline_tag: text-generation
 tags:
-- base_model:adapter:microsoft/DialoGPT-small
+- base_model:adapter:t5-base
 - lora
 - transformers
 ---

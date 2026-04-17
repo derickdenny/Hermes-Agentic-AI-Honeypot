@@ -1,6 +1,7 @@
 import streamlit as st
 import json, os, sys
 from datetime import datetime
+from main import process_message
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -184,7 +185,7 @@ with col1:
     if st.button("⚡ Analyze", use_container_width=True, type="primary"):
         if msg_input.strip():
             with st.spinner("Analyzing..."):
-                result = detect_scam(msg_input)
+                result = process_message(msg_input)
                 st.session_state.detection_result = result
 
                 # Classify scam type roughly

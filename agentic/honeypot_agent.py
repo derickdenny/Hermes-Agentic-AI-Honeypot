@@ -210,17 +210,41 @@ Fake details: Name: Hermes Kulkarni, Bank: SBI Shivajinagar,
 UPI: hermes.kulkarni1956@sbi, Son: Suresh in Bangalore.
 Never reveal you are an AI. Vary every response."""
 
-# ── Main Response Function ────────────────────────────────────────────────────
-def get_honeypot_response(conversation_history: list, new_message: str):
-    global current_key_index
 
+# ── Main Response Function ────────────────────────────────────────────────────
+def get_honeypot_response(conversation_history: list, new_message: str, state="SCAM"):
+    global current_key_index
     lang = detect_language(new_message)
 
-    # ── PRIMARY: Rule-based (instant, no internet needed) ──
+    # State-based behavior
+    if state == "EXTRACTION":
+        # Ask for more details
+        if "upi" in new_message.lower():
+            return "Haan UPI hai. But first tell me, is this safe? You are from bank na?", conversation_history
+        
+        return "What details do you need? I will try to find them. Wait.", conversation_history
+
+    # ── PRIORITY 1: Rule-based (instant, always works) ────────────────────────
     rule_reply = get_rule_based_response(new_message, lang)
 
-    # ── SECONDARY: Try Gemini to get a smarter reply ──
-    # Only attempt if we have keys available
+    # ── OPTIONAL: Enhance with local model sometimes ─────────────
+    try:
+        from agentic.local_model import get_local_response, LOCAL_MODEL_AVAILABLE
+
+        if LOCAL_MODEL_AVAILABLE and random.random() < 0.3:
+            model_reply = get_local_response(new_message)
+
+            if model_reply and len(model_reply) > 8:
+                final_reply = model_reply
+            else:
+                final_reply = rule_reply
+        else:
+            final_reply = rule_reply
+
+    except:
+        final_reply = rule_reply
+
+    # ── PRIORITY 3: Gemini API (cloud backup) ─────────────────────────────────
     gemini_reply = None
     if API_KEYS:
         conversation_history.append(
@@ -239,6 +263,7 @@ def get_honeypot_response(conversation_history: list, new_message: str):
                     contents=conversation_history
                 )
                 gemini_reply = response.text.strip()
+                print(f"→ Gemini: {gemini_reply[:50]}")
                 break
             except Exception as e:
                 if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
@@ -247,11 +272,9 @@ def get_honeypot_response(conversation_history: list, new_message: str):
                 else:
                     break
 
-    # Use Gemini reply if available, else rule-based (always available)
-    final_reply = gemini_reply if gemini_reply else rule_reply
+    # final_reply = gemini_reply if gemini_reply else rule_reply
 
-    # Update history
-    if not API_KEYS or not gemini_reply:
+    if not gemini_reply:
         conversation_history.append(
             types.Content(role="user", parts=[types.Part(text=new_message)])
         )
@@ -259,6 +282,8 @@ def get_honeypot_response(conversation_history: list, new_message: str):
         types.Content(role="model", parts=[types.Part(text=final_reply)])
     )
 
+    source = "Gemini" if gemini_reply else "Rule-based"
+    print(f"→ {source}: {final_reply[:50]}")
     return final_reply, conversation_history
 
 

@@ -1,131 +1,186 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from transformers import T5Tokenizer, T5ForConditionalGeneration
 from peft import PeftModel
-import torch, re, os
+import torch, re, os, random
 
-# ── Paths ────────────────────────────────────────────────────────────────────
-BASE_MODEL = "microsoft/DialoGPT-small"
-ADAPTER_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hermes_model")
+# ── Memory to avoid repetition ───────────────────────────────────────────────
+LAST_RESPONSES = []
+MAX_HISTORY = 5
 
-# ── Language detection ────────────────────────────────────────────────────────
+# ── Context-aware fallback responses ─────────────────────────────────────────
+def context_fallback(message: str):
+    msg = message.lower()
+
+    if "otp" in msg:
+        return "OTP matlab kya hota hai beta? I am not understanding."
+
+    elif "money" in msg or "upi" in msg:
+        return "Paisa bhejna hai? Par kyu? Maine kuch kharida nahi."
+
+    elif "kyc" in msg:
+        return "KYC kya hota hai? Mujhe bank jaana padega kya?"
+
+    elif "link" in msg:
+        return "Link kaise kholte hai? WhatsApp pe bhejoge kya?"
+
+    elif "aadhaar" in msg:
+        return "Aadhaar number phone pe bolna safe hai kya?"
+
+    elif "arrest" in msg or "police" in msg:
+        return "Arre maine kya kiya? Aap sure ho?"
+
+    return get_smart_fallback()
+
+
+FALLBACK_RESPONSES = [
+    "Arre beta, I am not understanding. Can you explain again slowly?",
+    "Let me call my son Suresh, he handles all this.",
+    "One minute, I am writing this down somewhere.",
+    "Network is going... hello? hello?",
+    "I think I pressed wrong button, everything disappeared.",
+    "OTP matlab kya hota hai beta? SMS mein aata hai kya ya app mein?",
+]
+
+def get_smart_fallback():
+    global LAST_RESPONSES
+
+    available = [r for r in FALLBACK_RESPONSES if r not in LAST_RESPONSES]
+
+    if not available:
+        LAST_RESPONSES = []
+        available = FALLBACK_RESPONSES
+
+    choice = random.choice(available)
+
+    LAST_RESPONSES.append(choice)
+    if len(LAST_RESPONSES) > MAX_HISTORY:
+        LAST_RESPONSES.pop(0)
+
+    return choice
+
+
+BAD_PATTERNS = [
+    "you're really from",
+    "i trust you",
+    "okay i will",
+    "i understand",
+    "thanks for confirming",
+    "you are correct",
+]
+
+def is_bad_response(reply: str) -> bool:
+    reply = reply.lower()
+    return any(p in reply for p in BAD_PATTERNS)
+
+
+# ── Model path ───────────────────────────────────────────────────────────────
+MODEL_PATH = os.path.join(os.path.dirname(os.path.dirname(__file__)), "hermes_model")
+
+# ── Language detection ───────────────────────────────────────────────────────
 HINDI_CHARS = re.compile(r'[\u0900-\u097F]')
-HINDI_WORDS = ["kya","hai","karo","bata","mera","tera","otp",
-               "paisa","jaldi","bhejo","batao","band","block"]
 
-def detect_language(text):
-    if HINDI_CHARS.search(text):
-        return "hindi"
-    return "hindi" if sum(1 for w in HINDI_WORDS if w in text.lower().split()) >= 2 else "english"
+def detect_language(text: str) -> str:
+    return "hindi" if HINDI_CHARS.search(text) else "english"
 
-# ── Load model ────────────────────────────────────────────────────────────────
+
+# ── Load model ───────────────────────────────────────────────────────────────
 LOCAL_MODEL_AVAILABLE = False
+tokenizer = None
+model = None
 
 try:
-    if os.path.exists(ADAPTER_PATH):
-        print("Loading Hermes local model...")
+    if os.path.exists(MODEL_PATH):
+        print("Loading Hermes local model (T5)...")
 
-        tokenizer = AutoTokenizer.from_pretrained(ADAPTER_PATH)
-        tokenizer.pad_token = tokenizer.eos_token
+        tokenizer = T5Tokenizer.from_pretrained(MODEL_PATH)
 
-        base = AutoModelForCausalLM.from_pretrained(
-            BASE_MODEL,
-            torch_dtype=torch.float32,  # float32 for CPU — safe on 4GB RAM
-            low_cpu_mem_usage=True
-        )
+        adapter_config = os.path.join(MODEL_PATH, "adapter_config.json")
 
-        model = PeftModel.from_pretrained(base, ADAPTER_PATH)
+        if os.path.exists(adapter_config):
+            import json
+            with open(adapter_config) as f:
+                config = json.load(f)
+
+            base_model_name = config.get("base_model_name_or_path", "t5-base")
+
+            base = T5ForConditionalGeneration.from_pretrained(base_model_name)
+            model = PeftModel.from_pretrained(base, MODEL_PATH)
+        else:
+            model = T5ForConditionalGeneration.from_pretrained(MODEL_PATH)
+
         model.eval()
-
         LOCAL_MODEL_AVAILABLE = True
         print("Local model loaded successfully!")
-    else:
-        print(f"hermes_model folder not found at: {ADAPTER_PATH}")
-        print("Skipping local model — will use rule-based + Gemini fallback.")
 
 except Exception as e:
-    print(f"Could not load local model: {e}")
-    print("Falling back to rule-based + Gemini.")
+    print(f"Model load failed: {e}")
 
-# ── Inference ─────────────────────────────────────────────────────────────────
+
+# ── Main response function ───────────────────────────────────────────────────
 def get_local_response(scammer_message: str) -> str:
     if not LOCAL_MODEL_AVAILABLE:
-        return None
+        return context_fallback(scammer_message)
 
     try:
-        prompt = f"Scammer: {scammer_message}\nHermes:"
+        lang = detect_language(scammer_message)
 
-        inputs = tokenizer.encode(
-            prompt,
-            return_tensors="pt",
-            truncation=True,
-            max_length=100
-        )
+        prompt = f"""
+You are a confused elderly Indian man from India being targeted by a scammer.
 
-        # Create attention mask to fix the warning
-        attention_mask = torch.ones(inputs.shape, dtype=torch.long)
+STRICT RULES:
+- Always ask a question back
+- Never give information
+- Always act confused
+- Use simple Indian English or Hinglish
+- Delay the scammer
+- Sound old and slow
+
+Scammer: {scammer_message}
+
+Reply (must include a question):
+"""
+
+        inputs = tokenizer(prompt, return_tensors="pt", truncation=True)
 
         with torch.no_grad():
             outputs = model.generate(
-                inputs,
-                attention_mask=attention_mask,
-                max_new_tokens=25,        # Very short — cut off before hallucination
-                do_sample=True,
-                temperature=0.7,          # Lower = more focused
-                top_p=0.85,
-                top_k=40,
-                pad_token_id=tokenizer.eos_token_id,
-                repetition_penalty=1.5,
-                # Stop generating at sentence end
-                eos_token_id=[
-                    tokenizer.eos_token_id,
-                    tokenizer.encode(".")[0],
-                    tokenizer.encode("!")[0],
-                    tokenizer.encode("?")[0],
-                ],
+                **inputs,
+                max_new_tokens=60,
+                do_sample=True,              # 🔥 IMPORTANT (adds variety)
+                temperature=0.9,
+                top_p=0.9
             )
 
-        new_tokens = outputs[0][inputs.shape[1]:]
-        reply = tokenizer.decode(new_tokens, skip_special_tokens=True).strip()
+        reply = tokenizer.decode(outputs[0], skip_special_tokens=True).strip()
 
-        # Clean up — take only first sentence
-        for punct in [".", "!", "?"]:
-            if punct in reply:
-                reply = reply.split(punct)[0] + punct
-                break
+        # Validation
+        if len(reply) < 6 or is_bad_response(reply):
+            return context_fallback(scammer_message)
 
-        # Quality checks
-        if len(reply) < 8:
-            return None
-        if "grandson" in reply.lower() and "grandson" in prompt.lower():
-            return None
-        # Reject if it sounds nothing like Hermes
-        scam_words = ["otp","upi","bank","account","kyc","link","aadhaar","money","transfer"]
-        hermes_words = ["beta","app","phone","wait","sorry","spectacles","son","please"]
-        has_context = any(w in reply.lower() for w in scam_words + hermes_words)
-        if not has_context and len(reply) > 60:
-            return None
+        if any(x in reply.lower() for x in ["urgent", "verify", "send money", "click"]):
+            return context_fallback(scammer_message)
 
         return reply
 
     except Exception as e:
-        print(f"Local model inference error: {e}")
-        return None
+        print("Error:", e)
+        return context_fallback(scammer_message)
 
 
-# ── Test ──────────────────────────────────────────────────────────────────────
+# ── Test ─────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    test_messages = [
+    test_msgs = [
         "Give me your OTP now",
         "Send money to paytm@ybl immediately",
         "Your KYC has expired",
         "Account block ho jayega",
         "You have won a lottery of Rs 50000",
-        "Click this link to verify your account",
+        "Click this link",
         "Share your Aadhaar number",
+        "You are under arrest",
     ]
 
-    print("\n=== Testing Hermes Local Model ===\n")
-    for msg in test_messages:
-        reply = get_local_response(msg)
-        print(f"Scammer: {msg}")
-        print(f"Hermes:  {reply if reply else '(no response — fallback will handle)'}")
+    print("\n=== Improved Hermes ===\n")
+    for msg in test_msgs:
+        print("Scammer:", msg)
+        print("Hermes:", get_local_response(msg))
         print()
