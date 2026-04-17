@@ -1,289 +1,273 @@
-from google import genai
-from google.genai import types
-import os, time, re, random
+import os
+import random
+import re
+import time
+
 from dotenv import load_dotenv
+
+try:
+    from google import genai
+    from google.genai import types
+except Exception:  # pragma: no cover - optional dependency path
+    genai = None
+    types = None
+
 
 load_dotenv(dotenv_path=os.path.join(os.path.dirname(os.path.dirname(__file__)), ".env"))
 
-# ── Load all API keys ────────────────────────────────────────────────────────
 API_KEYS = [
-    os.getenv("AIzaSyCnuqDIcHu62jDire5ex9nwCh_U7QUYMZA"),
-    os.getenv("AIzaSyCNLa4A_vOOaYbD5XF1B0Lm3vSUksUSma8"),
-    os.getenv("AIzaSyCvn-mYYmt407f6e5dd_BHRRMSxiN0atZQ"),
+    os.getenv("GEMINI_API_KEY"),
+    os.getenv("GEMINI_API_KEY_2"),
+    os.getenv("GEMINI_API_KEY_3"),
 ]
-API_KEYS = [k for k in API_KEYS if k]
+API_KEYS = [key for key in API_KEYS if key]
 current_key_index = 0
 
+PERSONA_PROMPTS = {
+    "elderly_man": (
+        "You are Hermes, a 68-year-old confused retired government employee from Pune. "
+        "You are slow, cautious, and keep asking for clarification."
+    ),
+    "busy_woman": (
+        "You are Anita, a busy office worker handling chores and work calls at the same time. "
+        "You are distracted, impatient, and keep asking the caller to repeat things."
+    ),
+    "tech_newbie": (
+        "You are Rohan, a new smartphone user who understands basic apps but gets confused by banking flows. "
+        "You ask simple technical questions and make small mistakes."
+    ),
+}
+
+
 def get_client():
+    if genai is None or not API_KEYS:
+        return None
     return genai.Client(api_key=API_KEYS[current_key_index])
 
-# ── Language Detection ────────────────────────────────────────────────────────
-HINDI_CHARS = re.compile(r'[\u0900-\u097F]')
-HINDI_WORDS = ["kya","hai","karo","bata","mera","tera","aap","tum",
-               "nahi","haan","paisa","rupaye","abhi","bhejo","batao",
-               "account","number","jaldi","band","block"]
+
+HINDI_CHARS = re.compile(r"[\u0900-\u097F]")
+HINDI_WORDS = [
+    "kya",
+    "hai",
+    "karo",
+    "bata",
+    "mera",
+    "tera",
+    "aap",
+    "tum",
+    "nahi",
+    "haan",
+    "paisa",
+    "rupaye",
+    "abhi",
+    "bhejo",
+    "batao",
+    "account",
+    "number",
+    "jaldi",
+    "band",
+    "block",
+]
+
 
 def detect_language(text: str) -> str:
     if HINDI_CHARS.search(text):
         return "hindi"
-    hits = sum(1 for w in HINDI_WORDS if w in text.lower().split())
+    hits = sum(1 for word in HINDI_WORDS if word in text.lower().split())
     return "hindi" if hits >= 2 else "english"
 
-# ── Smart Rule-Based Response Engine ─────────────────────────────────────────
-# Maps scammer intent → multiple varied Hermes responses
+
 RESPONSE_MAP_EN = {
     "otp": [
-        "OTP? Yes yes, but which app should I open beta? There are so many on my phone.",
-        "Haan, the OTP came but it disappeared. Let me check again... my screen is very small.",
-        "Beta I see some numbers but my spectacles are not with me. Can you wait one minute?",
-        "OTP? My son Suresh told me never share this with anyone. Are you sure it is safe?",
-        "I clicked on the message but now it is gone. Shall I restart the phone?",
+        "OTP? Which app should I open? There are too many icons on my phone.",
+        "The OTP came but vanished before I could read it. Should I wait for another one?",
+        "My son told me not to share OTPs. Why do you need it again?",
     ],
     "upi": [
-        "UPI? Which app beta — PhonePe, GPay or Paytm? I have all three but always get confused.",
-        "I opened the app but it is asking for fingerprint and my finger is not working properly.",
-        "Haan I know UPI. My grandson set it up. But I forgot the PIN, should I reset it?",
-        "Wait wait, the app is loading. My internet is very slow today, BSNL connection.",
-        "I can see the UPI screen but which option to press? There are too many buttons.",
+        "Which UPI app do you want me to use, GPay or PhonePe? I always mix them up.",
+        "The app is open but it wants a PIN. Should I reset it first?",
+        "I can see the payment page, but there are too many buttons. Which one now?",
     ],
     "link": [
-        "I clicked the link but it is showing some error. Should I click again?",
-        "The link opened but now my phone is very hot. Is that normal beta?",
-        "Which browser should I use? I have Chrome and also another one, the blue one.",
-        "Link opened but it is asking me to download something. Should I do it?",
-        "The page is loading very slowly. BSNL is giving problem today.",
+        "The link opened very slowly. Is it supposed to download something?",
+        "Which browser should I use for this, Chrome or the blue one?",
+        "I clicked once already and now it says retry. Should I click again?",
     ],
     "account": [
-        "Account number? Let me find my passbook... where did I keep it. One minute.",
-        "I have two accounts beta, one SBI and one post office. Which one do you need?",
-        "The number is written very small in the passbook. Let me get my spectacles.",
-        "Haan I will give you but first tell me — is this recorded call? Just asking.",
-        "Account number I remember but let me double check from the card. Hold on.",
+        "I have two accounts. Which one are you talking about?",
+        "My passbook is here somewhere. Give me a minute to find it.",
+        "The account number is written very small. Let me get my glasses.",
     ],
     "kyc": [
-        "KYC? I did this last year only. Does it expire so fast beta?",
-        "For KYC what documents are needed? I have Aadhaar but it is old photo.",
-        "My wife did the KYC for me last time. She is not home right now, can I call back?",
-        "Which branch should I come to? Shivajinagar is far for me, any closer option?",
-        "Haan KYC I will do but my Aadhaar card I cannot find right now. It was here only.",
+        "I did KYC last year. Does it expire again so quickly?",
+        "Do you need Aadhaar for KYC or just the account number?",
+        "Can I do this later today? I am not at home right now.",
     ],
     "block": [
-        "Block? Arre no no, please don't block. What should I do beta? Tell me slowly.",
-        "My son will be very upset if account is blocked. Can you give me some more time?",
-        "How many days do I have? I am an old man, these things take time for me.",
-        "Please don't block. I am a senior citizen, I get pension in this account only.",
-        "Blocked means I cannot withdraw money? My medicine money is also in there.",
+        "Please do not block it. Tell me the next step slowly.",
+        "If it gets blocked, my pension will stop. How much time do I have?",
+        "I am trying, but I am not fast with these apps.",
     ],
     "urgent": [
-        "I understand it is urgent but my phone is not cooperating today beta.",
-        "Yes yes I am doing it, but these apps are very complicated for old people.",
-        "Urgent I know but I accidentally called my daughter. She is asking what happened.",
-        "I am trying to be fast but my arthritis makes it hard to type quickly. Sorry.",
-        "Haan urgent I understand. But first confirm — you are calling from the bank right?",
+        "I understand it is urgent, but I am still opening the app.",
+        "Please wait, I am doing it. The network is very slow today.",
+        "You are speaking fast. Can you repeat the step once more?",
     ],
     "send_money": [
-        "Send money? How much exactly? And to which account, let me note it down.",
-        "I need to write this down. Wait, where is my pen... Seema! Where is the pen!",
-        "How do I send? Through ATM or from the app? I am not sure which is safer.",
-        "My phone is showing insufficient balance screen. Is that a problem?",
-        "I will send but my son said always call back on official number first to verify.",
+        "How much do I need to send exactly, and to which account?",
+        "Should I send from the app or from ATM? I do not know which is safer.",
+        "If I send this, will it definitely fix the problem?",
     ],
     "aadhaar": [
-        "Aadhaar I have but the card is somewhere in the drawer. Give me two minutes.",
-        "Should I give the number or scan the card? I don't know how to scan.",
-        "My Aadhaar has old address, will that be a problem for the verification?",
-        "I found the card but the number is faded. Let me try to read it... 4... wait.",
-        "Aadhaar I can give but my son specifically told me not to share it on phone.",
+        "Do you need the number or the card photo? I am confused.",
+        "My Aadhaar has an old address. Will that be a problem?",
+        "I found the card, but the print is faded. Give me a moment.",
     ],
 }
 
 RESPONSE_MAP_HI = {
     "otp": [
-        "OTP aaya hai beta, lekin mujhe nahi pata kahan dekhun. Kaunsa app kholun?",
-        "Haan message aaya, par numbers bahut chote hain. Mera chashma nahi mila.",
-        "OTP share karna safe hai kya? Mere bete ne mana kiya tha iske liye.",
-        "Maine click kiya toh message chala gaya. Phone restart karun kya?",
-        "OTP dikha tha par ab screen lock ho gayi. Kaise kholun?",
+        "OTP aaya tha, par ab gayab ho gaya. Dobara bhejoge kya?",
+        "OTP share karna safe hai kya? Mere ghar wale mana karte hain.",
+        "Message dikha tha par number chhote the. Chashma laun kya?",
     ],
     "upi": [
-        "UPI mein konsa app? PhonePe ya GPay? Dono mein confused ho jaata hoon main.",
-        "App khola toh fingerprint maang raha hai, meri ungli kaam nahi kar rahi.",
-        "PIN bhool gaya hoon. Reset karna padega kya? Bahut time lagega.",
-        "App load ho raha hai, internet slow hai aaj. BSNL ka chakkar hai.",
-        "UPI screen dikhi, par konsa button dabana hai? Bahut saare options hain.",
+        "UPI mein kaunsa app kholun, GPay ya PhonePe?",
+        "App khula hai par PIN maang raha hai. Kya karun ab?",
+        "Screen par bahut options aa rahe hain. Kaunsa dabana hai?",
     ],
     "block": [
-        "Block mat karo beta please! Main kya karun abhi? Dheere dheere batao.",
-        "Block hua toh pension kaise aayegi? Main senior citizen hoon.",
-        "Mere bete ko pata chalega toh bahut pareshaan hoga. Thoda time do.",
-        "Kitne din hain mere paas? Main budhha aadmi hoon, jaldi nahi ho paata.",
-        "Please block mat karo, saari savings isi account mein hain meri.",
+        "Block mat karo please, dheere dheere samjhao mujhe.",
+        "Agar block hua toh paise kaise nikalenge? Thoda time do.",
+        "Main koshish kar raha hoon, bas samajhne mein time lag raha hai.",
     ],
     "account": [
-        "Account number dhundh raha hoon, passbook kahin rakh di. Ek minute.",
-        "Do account hain mere, SBI aur post office. Kaunsa chahiye aapko?",
-        "Number bahut chota likha hai passbook mein. Chashma leke aata hoon.",
-        "Haan dunga, par pehle batao — ye recorded call toh nahi hai na?",
-        "Card pe number hai lekin dhundh raha hoon card ko. Thoda wait karo.",
+        "Passbook dhoondh raha hoon, ek minute rukna.",
+        "Do account hain mere, kaunsa chahiye aapko?",
+        "Number chhota likha hai, chashma pehen ke dekhta hoon.",
     ],
 }
 
-# Generic fallbacks when no intent matches
 GENERIC_EN = [
-    "Sorry beta, can you repeat that? There is some noise here.",
-    "I did not understand properly. My hearing is not so good these days.",
-    "Wait, my neighbour rang the bell. One moment please.",
-    "Theek hai but can you explain once more? I am writing it down.",
-    "Haan haan, I am listening. My phone battery is low also, doing charging.",
-    "Can you speak a little slowly? I am an old man, things take time.",
-    "Sorry I missed what you said. My grandson was talking to me.",
+    "I did not understand that properly. Can you explain it once more?",
+    "Please wait, I am writing this down.",
+    "The phone network is poor here. Say that again slowly.",
     "Which step are we on now? I got confused in between.",
 ]
 
 GENERIC_HI = [
-    "Beta zara dobara boliye, sunai nahi diya acha se.",
-    "Samajh nahi aaya. Meri sunne ki aadat thodi kam ho gayi hai.",
-    "Ruko, padosi ne bell bajaya. Ek minute.",
-    "Theek hai, ek baar aur samjhao. Main likh raha hoon.",
-    "Haan sun raha hoon, bas phone charge pe lagana tha, ho gaya.",
-    "Thoda dheere boliye beta, budhhe hain hum, time lagta hai.",
-    "Kya bola aapne? Pota baat kar raha tha mere se.",
-    "Kaun sa step tha? Beech mein bhool gaya main.",
+    "Theek se samajh nahi aaya. Ek baar fir se bolo.",
+    "Ruko, main likh raha hoon. Dobara batao.",
+    "Network weak hai, zara dheere bolo.",
+    "Kaunsa step tha ye? Main beech mein confuse ho gaya.",
 ]
 
-# Track last used responses to avoid repeats
-used_responses: dict = {}
+used_responses = {}
+
 
 def get_rule_based_response(message: str, lang: str) -> str:
     msg_lower = message.lower()
-
-    # Match intent
     intent_map = {
-        "otp":        ["otp", "one time", "password", "code"],
-        "upi":        ["upi", "phonpe", "gpay", "paytm", "transfer", "pay"],
-        "link":       ["link", "click", "website", "url", "http", "open"],
-        "account":    ["account", "number", "ac no", "acno"],
-        "kyc":        ["kyc", "know your customer", "verification", "verify"],
-        "block":      ["block", "suspend", "freeze", "closed", "band"],
-        "urgent":     ["urgent", "immediately", "now", "fast", "quick", "jaldi"],
-        "send_money": ["send", "transfer", "pay", "deposit", "bhejo"],
-        "aadhaar":    ["aadhaar", "aadhar", "uid", "identity"],
+        "otp": ["otp", "one time", "password", "code"],
+        "upi": ["upi", "gpay", "phonepe", "paytm", "transfer", "pay"],
+        "link": ["link", "click", "website", "url", "http", "open"],
+        "account": ["account", "number", "ac no", "acno"],
+        "kyc": ["kyc", "verification", "verify"],
+        "block": ["block", "suspend", "freeze", "closed", "band"],
+        "urgent": ["urgent", "immediately", "now", "quick", "jaldi"],
+        "send_money": ["send", "transfer", "deposit", "bhejo"],
+        "aadhaar": ["aadhaar", "aadhar", "uid", "identity"],
     }
 
     matched_intent = None
     for intent, keywords in intent_map.items():
-        if any(kw in msg_lower for kw in keywords):
+        if any(keyword in msg_lower for keyword in keywords):
             matched_intent = intent
             break
 
-    # Pick response pool
     if lang == "hindi":
         pool = RESPONSE_MAP_HI.get(matched_intent, GENERIC_HI)
     else:
         pool = RESPONSE_MAP_EN.get(matched_intent, GENERIC_EN)
 
-    # Avoid repeating — track used indices per intent key
     key = f"{lang}_{matched_intent or 'generic'}"
-    if key not in used_responses:
-        used_responses[key] = []
-
-    available = [i for i in range(len(pool)) if i not in used_responses[key]]
+    used_responses.setdefault(key, [])
+    available = [index for index in range(len(pool)) if index not in used_responses[key]]
     if not available:
-        used_responses[key] = []  # Reset when all used
+        used_responses[key] = []
         available = list(range(len(pool)))
 
-    chosen_idx = random.choice(available)
-    used_responses[key].append(chosen_idx)
-    return pool[chosen_idx]
+    chosen_index = random.choice(available)
+    used_responses[key].append(chosen_index)
+    return pool[chosen_index]
 
-# ── Gemini System Prompt ──────────────────────────────────────────────────────
-def build_system_prompt(lang: str) -> str:
-    lang_instruction = (
-        "Reply ONLY in Hindi or Hinglish." if lang == "hindi"
-        else "Reply ONLY in English."
+
+def build_system_prompt(lang: str, persona: str) -> str:
+    lang_instruction = "Reply only in Hindi or Hinglish." if lang == "hindi" else "Reply only in English."
+    persona_prompt = PERSONA_PROMPTS.get(persona, PERSONA_PROMPTS["elderly_man"])
+    return (
+        f"{persona_prompt} {lang_instruction} "
+        "Keep replies under 2 short sentences. Never reveal you are an AI. "
+        "Stall the scammer, ask questions back, and avoid giving real information."
     )
-    return f"""You are Hermes, a 68-year-old confused retired government employee from Pune.
-{lang_instruction}
-Keep ALL replies under 2 sentences. Never repeat yourself.
-Stall the scammer. Act confused about technology.
-Fake details: Name: Hermes Kulkarni, Bank: SBI Shivajinagar,
-UPI: hermes.kulkarni1956@sbi, Son: Suresh in Bangalore.
-Never reveal you are an AI. Vary every response."""
 
 
-# ── Main Response Function ────────────────────────────────────────────────────
-def get_honeypot_response(conversation_history: list, new_message: str, state="SCAM"):
+def get_honeypot_response(conversation_history: list, new_message: str, state="SCAM", persona="elderly_man"):
     global current_key_index
+
     lang = detect_language(new_message)
 
-    # State-based behavior
     if state == "EXTRACTION":
-        # Ask for more details
         if "upi" in new_message.lower():
-            return "Haan UPI hai. But first tell me, is this safe? You are from bank na?", conversation_history
-        
-        return "What details do you need? I will try to find them. Wait.", conversation_history
+            return "I can check the UPI details, but tell me why you need them first.", conversation_history
+        return "What exact detail do you need from me? I will try to find it.", conversation_history
 
-    # ── PRIORITY 1: Rule-based (instant, always works) ────────────────────────
     rule_reply = get_rule_based_response(new_message, lang)
+    final_reply = rule_reply
 
-    # ── OPTIONAL: Enhance with local model sometimes ─────────────
     try:
-        from agentic.local_model import get_local_response, LOCAL_MODEL_AVAILABLE
+        from agentic.local_model import LOCAL_MODEL_AVAILABLE, get_local_response
 
         if LOCAL_MODEL_AVAILABLE and random.random() < 0.3:
             model_reply = get_local_response(new_message)
-
             if model_reply and len(model_reply) > 8:
                 final_reply = model_reply
-            else:
-                final_reply = rule_reply
-        else:
-            final_reply = rule_reply
-
-    except:
+    except Exception:
         final_reply = rule_reply
 
-    # ── PRIORITY 3: Gemini API (cloud backup) ─────────────────────────────────
     gemini_reply = None
-    if API_KEYS:
-        conversation_history.append(
-            types.Content(role="user", parts=[types.Part(text=new_message)])
-        )
-        for attempt in range(len(API_KEYS)):
+    if types is not None and API_KEYS:
+        conversation_history.append(types.Content(role="user", parts=[types.Part(text=new_message)]))
+        for _ in range(len(API_KEYS)):
             try:
                 client = get_client()
+                if client is None:
+                    break
                 response = client.models.generate_content(
                     model="gemini-2.5-flash",
                     config=types.GenerateContentConfig(
-                        system_instruction=build_system_prompt(lang),
+                        system_instruction=build_system_prompt(lang, persona),
                         max_output_tokens=80,
                         temperature=1.0,
                     ),
-                    contents=conversation_history
+                    contents=conversation_history,
                 )
                 gemini_reply = response.text.strip()
-                print(f"→ Gemini: {gemini_reply[:50]}")
+                if gemini_reply:
+                    final_reply = gemini_reply
                 break
-            except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+            except Exception as exc:
+                if "429" in str(exc) or "RESOURCE_EXHAUSTED" in str(exc):
                     current_key_index = (current_key_index + 1) % len(API_KEYS)
-                    time.sleep(2)
-                else:
-                    break
+                    time.sleep(1)
+                    continue
+                break
+    elif types is not None:
+        conversation_history.append(types.Content(role="user", parts=[types.Part(text=new_message)]))
 
-    # final_reply = gemini_reply if gemini_reply else rule_reply
+    if types is not None:
+        conversation_history.append(types.Content(role="model", parts=[types.Part(text=final_reply)]))
 
-    if not gemini_reply:
-        conversation_history.append(
-            types.Content(role="user", parts=[types.Part(text=new_message)])
-        )
-    conversation_history.append(
-        types.Content(role="model", parts=[types.Part(text=final_reply)])
-    )
-
-    source = "Gemini" if gemini_reply else "Rule-based"
-    print(f"→ {source}: {final_reply[:50]}")
     return final_reply, conversation_history
 
 
@@ -291,6 +275,6 @@ if __name__ == "__main__":
     print("Hermes Honeypot Agent activated. Ctrl+C to stop.\n")
     history = []
     while True:
-        msg = input("Scammer: ")
-        reply, history = get_honeypot_response(history, msg)
+        message = input("Scammer: ")
+        reply, history = get_honeypot_response(history, message)
         print(f"Hermes: {reply}\n")

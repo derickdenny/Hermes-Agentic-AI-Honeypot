@@ -128,6 +128,10 @@ def _calculate_risk(detection: dict, session: dict) -> tuple[float, str]:
         + (0.05 if session["turn_count"] >= 3 else 0.0),
         1.0,
     )
+    if session["current_state"] == "EXTRACTION":
+        combined = max(combined, 0.8)
+    elif session["current_state"] == "SCAM":
+        combined = max(combined, 0.6)
     if combined >= 0.75:
         level = "HIGH"
     elif combined >= 0.45:

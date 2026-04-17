@@ -1,364 +1,302 @@
-import streamlit as st
-import json, os, sys
+import json
+import os
+import sys
 from datetime import datetime
+
+import streamlit as st
+
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT_DIR not in sys.path:
+    sys.path.append(ROOT_DIR)
+
+from core.pipeline import PERSONAS, build_report, create_session, format_duration
 from main import process_message
 
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from detection.scam_detector import detect_scam
-from extraction.extractor import extract_fraud_data
-from agentic.honeypot_agent import get_honeypot_response
-
-# ── Page config ─────────────────────────────────────────────────────────────
 st.set_page_config(
     page_title="Hermes Honeypot",
-    page_icon="🍯",
+    page_icon="H",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
 
-# ── Custom CSS ───────────────────────────────────────────────────────────────
-st.markdown("""
-<style>
-    .main { background-color: #0e1117; }
-    .stApp { background-color: #0e1117; }
+st.markdown(
+    """
+    <style>
+        .stApp {
+            background:
+                radial-gradient(circle at top left, rgba(249,115,22,0.18), transparent 28%),
+                radial-gradient(circle at top right, rgba(14,165,233,0.14), transparent 24%),
+                linear-gradient(180deg, #07111a 0%, #0d1722 100%);
+            color: #e5edf5;
+        }
+        .hero {
+            padding: 1.2rem 1.4rem;
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 20px;
+            background: linear-gradient(135deg, rgba(15,23,42,0.9), rgba(17,24,39,0.72));
+            margin-bottom: 1rem;
+        }
+        .hero h1 {
+            margin: 0;
+            font-size: 2.2rem;
+            color: #f8fafc;
+        }
+        .hero p {
+            margin: 0.35rem 0 0 0;
+            color: #cbd5e1;
+        }
+        .metric-card {
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 16px;
+            padding: 1rem;
+            background: rgba(15, 23, 42, 0.7);
+            min-height: 110px;
+        }
+        .metric-label {
+            font-size: 0.78rem;
+            color: #94a3b8;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+        }
+        .metric-value {
+            font-size: 1.85rem;
+            font-weight: 700;
+            margin-top: 0.4rem;
+            color: #f8fafc;
+        }
+        .panel {
+            border: 1px solid rgba(148, 163, 184, 0.16);
+            border-radius: 18px;
+            padding: 1rem;
+            background: rgba(15, 23, 42, 0.68);
+            height: 100%;
+        }
+        .timeline-item {
+            border-left: 3px solid #f97316;
+            padding: 0.7rem 0.9rem;
+            margin-bottom: 0.75rem;
+            background: rgba(30, 41, 59, 0.62);
+            border-radius: 10px;
+        }
+        .timeline-meta {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            margin-bottom: 0.35rem;
+        }
+        .turn-scammer {
+            border-left-color: #ef4444;
+        }
+        .turn-ai {
+            border-left-color: #22c55e;
+        }
+        .chip {
+            display: inline-block;
+            padding: 0.2rem 0.55rem;
+            margin: 0.1rem 0.3rem 0.1rem 0;
+            border-radius: 999px;
+            background: rgba(249, 115, 22, 0.14);
+            color: #fdba74;
+            font-size: 0.8rem;
+        }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-    .hero-title {
-        font-size: 2.4rem; font-weight: 700;
-        background: linear-gradient(90deg, #f97316, #ef4444);
-        -webkit-background-clip: text; -webkit-text-fill-color: transparent;
-        text-align: center; margin-bottom: 0.2rem;
-    }
-    .hero-sub {
-        text-align: center; color: #6b7280;
-        font-size: 0.95rem; margin-bottom: 2rem;
-    }
 
-    .card {
-        background: #1c1f26; border: 1px solid #2d3139;
-        border-radius: 12px; padding: 1.2rem;
-        margin-bottom: 1rem;
-    }
-    .card-title {
-        font-size: 0.8rem; font-weight: 600;
-        color: #9ca3af; letter-spacing: 0.08em;
-        text-transform: uppercase; margin-bottom: 0.6rem;
-    }
+def initialize_state():
+    if "hermes_session" not in st.session_state:
+        st.session_state.hermes_session = create_session()
+    if "latest_result" not in st.session_state:
+        st.session_state.latest_result = None
 
-    .scam-bubble {
-        background: #2d1f1f; border-left: 3px solid #ef4444;
-        border-radius: 8px; padding: 0.7rem 1rem;
-        margin-bottom: 0.5rem; color: #fca5a5; font-size: 0.9rem;
-    }
-    .ai-bubble {
-        background: #1a2a1a; border-left: 3px solid #22c55e;
-        border-radius: 8px; padding: 0.7rem 1rem;
-        margin-bottom: 0.5rem; color: #86efac; font-size: 0.9rem;
-    }
-    .system-bubble {
-        background: #1e1f2e; border-left: 3px solid #6366f1;
-        border-radius: 8px; padding: 0.5rem 1rem;
-        margin-bottom: 0.5rem; color: #a5b4fc; font-size: 0.8rem;
-    }
 
-    .badge-red   { background:#4b1a1a; color:#f87171; border-radius:6px; padding:2px 10px; font-size:0.78rem; font-weight:600; }
-    .badge-amber { background:#3b2a0e; color:#fbbf24; border-radius:6px; padding:2px 10px; font-size:0.78rem; font-weight:600; }
-    .badge-green { background:#0f2e1a; color:#4ade80; border-radius:6px; padding:2px 10px; font-size:0.78rem; font-weight:600; }
+def reset_state(persona: str):
+    st.session_state.hermes_session = create_session(persona=persona)
+    st.session_state.latest_result = None
 
-    .metric-box {
-        background: #1c1f26; border: 1px solid #2d3139;
-        border-radius: 10px; padding: 0.9rem 1rem; text-align: center;
-    }
-    .metric-value { font-size: 1.8rem; font-weight: 700; }
-    .metric-label { font-size: 0.75rem; color: #6b7280; margin-top: 2px; }
 
-    .indicator {
-        display: inline-block; width: 10px; height: 10px;
-        border-radius: 50%; margin-right: 6px;
-    }
-    .ind-red   { background: #ef4444; }
-    .ind-green { background: #22c55e; }
-    .ind-gray  { background: #4b5563; }
+initialize_state()
+session = st.session_state.hermes_session
+latest_result = st.session_state.latest_result
 
-    div[data-testid="stButton"] button {
-        border-radius: 8px; font-weight: 600;
-    }
-</style>
-""", unsafe_allow_html=True)
-
-# ── Session state ────────────────────────────────────────────────────────────
-defaults = {
-    "conversation": [],
-    "ai_history": [],
-    "all_extractions": {},
-    "handover_active": False,
-    "detection_result": None,
-    "turn_count": 0,
-    "scam_types_seen": [],
-}
-for k, v in defaults.items():
-    if k not in st.session_state:
-        st.session_state[k] = v
-
-# ── Header ───────────────────────────────────────────────────────────────────
-st.markdown('<div class="hero-title">🍯 Hermes — Agentic AI Honeypot</div>', unsafe_allow_html=True)
-st.markdown('<div class="hero-sub">Scam & Fraud Intelligence System · Real-time Detection · Active Deception</div>', unsafe_allow_html=True)
-
-# ── Sidebar ──────────────────────────────────────────────────────────────────
 with st.sidebar:
-    st.markdown("### 🛡️ System Status")
-
-    honeypot_status = "🟢 Active" if st.session_state.handover_active else "🔴 Standby"
-    st.markdown(f"**Honeypot Agent:** {honeypot_status}")
-    st.markdown(f"**Conversation Turns:** {st.session_state.turn_count}")
-
-    ex = st.session_state.all_extractions
-    indicators_found = sum(len(v) for v in ex.values() if isinstance(v, list))
-    st.markdown(f"**Indicators Extracted:** {indicators_found}")
-
-    st.divider()
-    st.markdown("### 📋 Scam Types Detected")
-    if st.session_state.scam_types_seen:
-        for s in set(st.session_state.scam_types_seen):
-            st.markdown(f"- {s}")
-    else:
-        st.caption("None yet")
-
-    st.divider()
-    if st.button("🔄 Reset Session", use_container_width=True):
-        for k in list(st.session_state.keys()):
-            del st.session_state[k]
-        st.rerun()
-
-# ── Top metrics row ──────────────────────────────────────────────────────────
-m1, m2, m3, m4 = st.columns(4)
-
-score = st.session_state.detection_result["combined_score"] if st.session_state.detection_result else 0
-risk  = "HIGH" if score > 0.7 else "MEDIUM" if score > 0.45 else "LOW"
-risk_color = "#ef4444" if risk=="HIGH" else "#f59e0b" if risk=="MEDIUM" else "#22c55e"
-
-with m1:
-    st.markdown(f"""
-    <div class="metric-box">
-        <div class="metric-value" style="color:{risk_color}">{score:.0%}</div>
-        <div class="metric-label">Scam Confidence</div>
-    </div>""", unsafe_allow_html=True)
-
-with m2:
-    st.markdown(f"""
-    <div class="metric-box">
-        <div class="metric-value" style="color:{risk_color}">{risk}</div>
-        <div class="metric-label">Risk Level</div>
-    </div>""", unsafe_allow_html=True)
-
-with m3:
-    st.markdown(f"""
-    <div class="metric-box">
-        <div class="metric-value" style="color:#6366f1">{st.session_state.turn_count}</div>
-        <div class="metric-label">Turns Engaged</div>
-    </div>""", unsafe_allow_html=True)
-
-with m4:
-    st.markdown(f"""
-    <div class="metric-box">
-        <div class="metric-value" style="color:#f97316">{indicators_found}</div>
-        <div class="metric-label">Indicators Found</div>
-    </div>""", unsafe_allow_html=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-# ── Main layout: 3 columns ───────────────────────────────────────────────────
-col1, col2, col3 = st.columns([1.1, 1.5, 1.2])
-
-# ══════════════════════════════════════════════════════════
-# COLUMN 1 — Detection Engine
-# ══════════════════════════════════════════════════════════
-with col1:
-    st.markdown('<div class="card-title">🔍 Detection Engine</div>', unsafe_allow_html=True)
-
-    msg_input = st.text_area(
-        "Incoming message:",
-        placeholder="Paste a suspicious message here...",
-        height=110, label_visibility="collapsed"
+    st.subheader("Session Controls")
+    persona = st.selectbox(
+        "Active persona",
+        options=list(PERSONAS.keys()),
+        index=list(PERSONAS.keys()).index(session["persona"]),
+        format_func=lambda key: PERSONAS[key]["label"],
     )
 
-    if st.button("⚡ Analyze", use_container_width=True, type="primary"):
-        if msg_input.strip():
-            with st.spinner("Analyzing..."):
-                result = process_message(msg_input)
-                st.session_state.detection_result = result
+    if persona != session["persona"]:
+        session["persona"] = persona
 
-                # Classify scam type roughly
-                text_lower = msg_input.lower()
-                if any(w in text_lower for w in ["otp","upi","bank","account","transfer"]):
-                    scam_type = "Financial Fraud"
-                elif any(w in text_lower for w in ["kyc","aadhaar","verify","update"]):
-                    scam_type = "Identity Phishing"
-                elif any(w in text_lower for w in ["lottery","won","prize","gift"]):
-                    scam_type = "Lottery Scam"
-                elif any(w in text_lower for w in ["arrest","police","court","legal"]):
-                    scam_type = "Legal Threat Scam"
-                else:
-                    scam_type = "Unknown"
-                if result["is_scam"]:
-                    st.session_state.scam_types_seen.append(scam_type)
+    st.caption(PERSONAS[session["persona"]]["description"])
 
-                # Extract
-                extraction = extract_fraud_data(msg_input)
-                for k, v in extraction.items():
-                    if k not in ("raw_text","named_entities") and v:
-                        st.session_state.all_extractions.setdefault(k, [])
-                        st.session_state.all_extractions[k] = list(
-                            set(st.session_state.all_extractions[k] + v)
-                        )
-
-                st.session_state.conversation.append({
-                    "role": "scammer", "text": msg_input,
-                    "score": result["combined_score"]
-                })
-                st.session_state.turn_count += 1
-                st.rerun()
-
-    # Detection result
-    if st.session_state.detection_result:
-        r = st.session_state.detection_result
-        s = r["combined_score"]
-        badge = f'<span class="badge-red">⚠ SCAM</span>' if r["is_scam"] else '<span class="badge-green">✓ SAFE</span>'
-        st.markdown(badge, unsafe_allow_html=True)
-        st.progress(s)
-        st.caption(f"Keyword: {r['keyword_score']}  ·  ML: {r['ml_score']}  ·  Combined: {r['combined_score']}")
-
-        if r["is_scam"] and not st.session_state.handover_active:
-            st.warning("Scam detected! Hand over to AI?")
-            if st.button("🤖 Activate Honeypot Agent", type="primary", use_container_width=True):
-                st.session_state.handover_active = True
-                st.session_state.conversation.append({
-                    "role": "system",
-                    "text": "Honeypot activated. Hermes has taken over the conversation."
-                })
-                st.rerun()
-
-    # Scam type
-    if st.session_state.scam_types_seen:
-        latest = st.session_state.scam_types_seen[-1]
-        st.markdown(f"**Scam type:** `{latest}`")
-
-# ══════════════════════════════════════════════════════════
-# COLUMN 2 — Live Conversation
-# ══════════════════════════════════════════════════════════
-with col2:
-    st.markdown('<div class="card-title">💬 Live Conversation</div>', unsafe_allow_html=True)
-
-    if st.session_state.handover_active:
-        honeypot_msg = st.text_input(
-            "Scammer says:",
-            placeholder="Type what the scammer says next...",
-            label_visibility="collapsed"
-        )
-    if st.button("➤ Send to Hermes", use_container_width=True):
-        if honeypot_msg.strip():
-            with st.spinner("Hermes is thinking..."):
-                try:
-                    reply, st.session_state.ai_history = get_honeypot_response(
-                        st.session_state.ai_history, honeypot_msg
-                    )
-                    extraction = extract_fraud_data(honeypot_msg)
-                    for k, v in extraction.items():
-                        if k not in ("raw_text", "named_entities") and v:
-                            st.session_state.all_extractions.setdefault(k, [])
-                            st.session_state.all_extractions[k] = list(
-                                set(st.session_state.all_extractions[k] + v)
-                            )
-                    st.session_state.conversation.append({"role": "scammer", "text": honeypot_msg, "score": None})
-                    st.session_state.conversation.append({"role": "ai", "text": reply, "score": None})
-                    st.session_state.turn_count += 1
-                    st.rerun()
-
-                except Exception as e:
-                    if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                        st.warning("⏳ API quota hit — please wait 30 seconds, then try again.")
-                    else:
-                        st.error(f"Something went wrong: {e}")
-
-    # Render conversation
-    chat_html = ""
-    for msg in st.session_state.conversation:
-        if msg["role"] == "scammer":
-            score_tag = f' <span style="font-size:0.75rem;color:#9ca3af;">({msg["score"]:.0%} confidence)</span>' if msg.get("score") else ""
-            chat_html += f'<div class="scam-bubble">🦹 <b>Scammer:</b> {msg["text"]}{score_tag}</div>'
-        elif msg["role"] == "ai":
-            chat_html += f'<div class="ai-bubble">🤖 <b>Hermes:</b> {msg["text"]}</div>'
-        elif msg["role"] == "system":
-            chat_html += f'<div class="system-bubble">⚙ {msg["text"]}</div>'
-
-    if chat_html:
-        st.markdown(chat_html, unsafe_allow_html=True)
-    else:
-        st.caption("No conversation yet. Analyze a message to begin.")
-
-# ══════════════════════════════════════════════════════════
-# COLUMN 3 — Intelligence Report
-# ══════════════════════════════════════════════════════════
-with col3:
-    st.markdown('<div class="card-title">📊 Fraud Intelligence</div>', unsafe_allow_html=True)
-
-    ex = st.session_state.all_extractions
-    if ex:
-        if ex.get("upi_ids"):
-            st.markdown("**💸 UPI IDs**")
-            for u in ex["upi_ids"]:
-                st.markdown(f'<span class="badge-red">{u}</span>', unsafe_allow_html=True)
-            st.markdown("")
-
-        if ex.get("phone_numbers"):
-            st.markdown("**📞 Phone Numbers**")
-            for p in ex["phone_numbers"]:
-                st.markdown(f'<span class="badge-amber">{p}</span>', unsafe_allow_html=True)
-            st.markdown("")
-
-        if ex.get("urls"):
-            st.markdown("**🔗 Suspicious URLs**")
-            for u in ex["urls"]:
-                st.markdown(f'<span class="badge-red">{u}</span>', unsafe_allow_html=True)
-            st.markdown("")
-
-        if ex.get("bank_accounts"):
-            st.markdown("**🏦 Account Numbers**")
-            for a in ex["bank_accounts"]:
-                st.markdown(f'<span class="badge-amber">{a}</span>', unsafe_allow_html=True)
-            st.markdown("")
-
-        if ex.get("aadhaar"):
-            st.markdown("**🪪 Aadhaar Patterns**")
-            for a in ex["aadhaar"]:
-                st.markdown(f'<span class="badge-red">{a}</span>', unsafe_allow_html=True)
-            st.markdown("")
-    else:
-        st.caption("No indicators extracted yet.")
+    if st.button("Reset Session", use_container_width=True):
+        reset_state(persona)
+        st.rerun()
 
     st.divider()
+    st.markdown("### State Snapshot")
+    st.write(f"State: `{session['current_state']}`")
+    st.write(f"Turns: `{session['turn_count']}`")
+    st.write(f"Time wasted: `{format_duration(session['time_wasted_seconds'])}`")
 
-    # Generate report
-    if st.session_state.conversation:
-        if st.button("📄 Generate Report", use_container_width=True):
-            report = {
-                "report_id": f"HRP-{datetime.now().strftime('%Y%m%d%H%M%S')}",
-                "timestamp": datetime.now().isoformat(),
-                "risk_level": risk,
-                "scam_confidence": score,
-                "scam_types": list(set(st.session_state.scam_types_seen)),
-                "conversation_turns": st.session_state.turn_count,
-                "honeypot_engaged": st.session_state.handover_active,
-                "extracted_indicators": st.session_state.all_extractions,
-                "conversation_log": [
-                    {"role": m["role"], "text": m["text"]}
-                    for m in st.session_state.conversation
-                ]
-            }
-            st.download_button(
-                label="⬇️ Download JSON Report",
-                data=json.dumps(report, indent=2),
-                file_name=f"hermes_report_{datetime.now().strftime('%Y%m%d_%H%M')}.json",
-                mime="application/json",
-                use_container_width=True
+st.markdown(
+    """
+    <div class="hero">
+        <h1>Hermes Agentic Honeypot</h1>
+        <p>Detect, engage, delay, and extract fraud intelligence through a shared stateful session pipeline.</p>
+    </div>
+    """,
+    unsafe_allow_html=True,
+)
+
+metric_cols = st.columns(4)
+risk_color = {"LOW": "#22c55e", "MEDIUM": "#f59e0b", "HIGH": "#ef4444"}
+
+with metric_cols[0]:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">Risk Score</div>
+            <div class="metric-value" style="color:{risk_color.get(session['risk_level'], '#f8fafc')}">{session['risk_score']:.0%}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with metric_cols[1]:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">Risk Level</div>
+            <div class="metric-value" style="color:{risk_color.get(session['risk_level'], '#f8fafc')}">{session['risk_level']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with metric_cols[2]:
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">Agent State</div>
+            <div class="metric-value">{session['current_state']}</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+with metric_cols[3]:
+    indicator_count = sum(
+        len(session["all_extractions"].get(key, []))
+        for key in ("upi_ids", "phone_numbers", "urls", "bank_accounts", "ifsc_codes", "aadhaar")
+    )
+    st.markdown(
+        f"""
+        <div class="metric-card">
+            <div class="metric-label">Time Wasted / Indicators</div>
+            <div class="metric-value">{format_duration(session['time_wasted_seconds'])}</div>
+            <div style="color:#94a3b8;font-size:0.85rem;">{indicator_count} indicators extracted</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+left, middle, right = st.columns([1.1, 1.4, 1.1])
+
+with left:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader("Detection Input")
+    message = st.text_area(
+        "Scammer message",
+        placeholder="Paste the latest scam message or call transcript here...",
+        height=180,
+    )
+    simulated_delay = st.slider("Simulated scammer time wasted per turn (seconds)", 5, 60, 18)
+    if st.button("Analyze And Engage", type="primary", use_container_width=True):
+        if message.strip():
+            result = process_message(
+                message=message.strip(),
+                session=st.session_state.hermes_session,
+                response_delay_seconds=simulated_delay,
             )
+            st.session_state.latest_result = result
+            st.rerun()
+
+    if latest_result:
+        st.markdown("### Latest Turn")
+        st.write(f"Verdict: `{latest_result['detection']['verdict']}`")
+        st.write(f"Scam type: `{latest_result['scam_type']}`")
+        st.write(f"State score: `{latest_result['score']}`")
+        if latest_result["reasons"]:
+            st.write("Escalation reasons:")
+            for reason in latest_result["reasons"]:
+                st.write(f"- {reason}")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with middle:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader("Conversation Timeline")
+    if session["conversation"]:
+        for turn in reversed(session["conversation"][-10:]):
+            css_class = "turn-ai" if turn["role"] == "ai" else "turn-scammer"
+            score_text = ""
+            if turn.get("score") is not None:
+                score_text = f" • score {turn['score']:.0%}"
+            st.markdown(
+                f"""
+                <div class="timeline-item {css_class}">
+                    <div class="timeline-meta">{turn.get('timestamp', '')} • {turn['role'].upper()} • {turn.get('state', 'NA')}{score_text}</div>
+                    <div>{turn['text']}</div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+    else:
+        st.info("No conversation yet. Run the first suspicious message through Hermes.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with right:
+    st.markdown('<div class="panel">', unsafe_allow_html=True)
+    st.subheader("Fraud Intelligence")
+    extracted = session["all_extractions"]
+    displayed_any = False
+    for key in ("upi_ids", "phone_numbers", "urls", "bank_accounts", "ifsc_codes", "aadhaar"):
+        values = extracted.get(key, [])
+        if values:
+            displayed_any = True
+            st.markdown(f"**{key.replace('_', ' ').title()}**")
+            st.markdown("".join(f'<span class="chip">{value}</span>' for value in values), unsafe_allow_html=True)
+    if not displayed_any:
+        st.caption("No indicators extracted yet.")
+
+    st.markdown("### Scam Type History")
+    if session["scam_types_seen"]:
+        for scam_type in sorted(set(session["scam_types_seen"])):
+            st.write(f"- {scam_type}")
+    else:
+        st.caption("No scam patterns classified yet.")
+
+    report = build_report(session)
+    st.download_button(
+        "Download Intelligence Report",
+        data=json.dumps(report, indent=2),
+        file_name=f"hermes_report_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
+        mime="application/json",
+        use_container_width=True,
+    )
+    st.markdown("</div>", unsafe_allow_html=True)
+
+if latest_result:
+    st.markdown("### Live Risk Meter")
+    st.progress(session["risk_score"])
+    st.caption(
+        f"Detection {latest_result['detection']['combined_score']:.0%} • "
+        f"Session {session['session_score']:.0%} • "
+        f"Time wasted {format_duration(session['time_wasted_seconds'])}"
+    )
