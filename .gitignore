@@ -1,4 +1,5 @@
-hermes_model/
-.env
+venv/
 __pycache__/
 *.pyc
+.env
+hermes_model/
